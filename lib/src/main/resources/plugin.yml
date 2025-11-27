@@ -1,5 +1,5 @@
 name: DawsonsMC
-version: '1.0.0'
+version: "1.0.0"
 main: family.dawsons.dawsonsmc.DawsonsMC
 authors: [doug]
 api-version: '1.21.10'

@@ -1,152 +1,63 @@
-#This workflow is triggered manually and whenever code is pushed to the 'main' branch.
-# It handles building the Java 21 Gradle project and creating a GitHub Releasewith the resulting JAR file.
-name: Build and Automatic Release (Java 21/Gradle)
+name: Build & Release Plugin
+
 on:
   push:
-    branches:
-      - main
-  # Allows you to run this workflow manually from the Actions tab in GitHub
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Specify version for manual release (e.g., v1.0.0)'
-        required: false
+    branches: [ "main" ]
+
+permissions:
+  contents: write
 
 jobs:
-  build_and_release:
-    # Use the latest Ubuntu runner environment
+  build:
+    if: github.actor != 'github-actions'
     runs-on: ubuntu-latest
 
-    # We only want to run the release step if the build is successful and it's a 'main' branch push.
-    # We also check if it's a manual dispatch to allow testing.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-
     steps:
-      # 1. Checkout the source code
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # Fetch all history for use in generating release notes/tags
-          fetch-depth: 0
 
-      # 2. Setup Java 21 Environment
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
-          # Use Gradle's built-in caching mechanism
-          cache: 'gradle'
+          distribution: temurin
+          java-version: 21
 
-      # 3. Grant execution permission for the Gradle wrapper
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
 
-      # 4. Build the project
-      # The build task now expects the JAR file in 'lib/build/libs/'
-      - name: Clean and Build with Gradle
-        run: ./gradlew clean build
+      - name: Build plugin
+        run: ./gradlew build
 
-      # --- Release Preparation ---
-
-      # 5. Determine the application version and JAR filename (with auto-bump logic)
-      - name: Determine Version and Artifact Path
-        id: prep
+      - name: Extract and bump version
+        id: bump
         run: |
-          # --- Get Version from lib/src/main/resources/plugin.yml ---
-          # We look for the 'version:' field and extract the value.
-          PLUGIN_YML_PATH="lib/src/main/resources/plugin.yml"
-          APP_VERSION_FILE=$(grep -E '^\s*version:\s*([0-9\.]+)' $PLUGIN_YML_PATH | sed -E 's/^\s*version:\s*//' | head -1)
+          VERSION=$(grep "^version=" gradle.properties | cut -d'=' -f2)
+          echo "Current version: $VERSION"
 
-          if [ -z "$APP_VERSION_FILE" ]; then
-            echo "Error: Could not extract version from $PLUGIN_YML_PATH. Check the file path and format ('version: X.Y.Z')."
-            exit 1
-          fi
+          IFS='.' read -r major minor patch <<< "$VERSION"
+          NEW_VERSION="$major.$minor.$((patch + 1))"
 
-          BASE_TAG="v$APP_VERSION_FILE"
-          RELEASE_TAG="$BASE_TAG"
+          echo "New version: $NEW_VERSION"
+          sed -i "s/^version=.*/version=$NEW_VERSION/" gradle.properties
 
-          # --- Version Bump Logic: Check if the tag already exists ---
-          if git tag -l | grep -q "^${BASE_TAG}$"; then
-            echo "⚠️ WARNING: Tag $BASE_TAG already exists. Automatically incrementing patch version."
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-            # Find the latest tag that starts with the same MAJOR.MINOR (e.g., v1.0.)
-            # We use sed to extract the version string without the 'v' prefix
-            LATEST_TAG=$(git tag --sort=-version:refname | grep -E "^v[0-9]+\.[0-9]+\." | head -1)
-
-            if [ -z "$LATEST_TAG" ]; then
-              # Fallback if no prior tags exist, stick to BASE_TAG (will fail if tag exists but helps logic)
-              echo "No prior tags found. Sticking to $BASE_TAG."
-              RELEASE_TAG="$BASE_TAG"
-            else
-              # Extract the version number (X.Y.Z) from the tag (vX.Y.Z)
-              VERSION_ONLY=${LATEST_TAG:1}
-
-              # Split version into components: MAJOR.MINOR.PATCH
-              MAJOR=$(echo $VERSION_ONLY | awk -F. '{print $1}')
-              MINOR=$(echo $VERSION_ONLY | awk -F. '{print $2}')
-              PATCH=$(echo $VERSION_ONLY | awk -F. '{print $3}')
-
-              # Increment the patch version
-              NEW_PATCH=$((PATCH + 1))
-              NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-              RELEASE_TAG="v$NEW_VERSION"
-
-              echo "➡️ Oldest existing tag: $LATEST_TAG"
-              echo "✅ New calculated version: $NEW_VERSION"
-            fi
-          fi
-
-          echo "Determined final Tag: $RELEASE_TAG"
-
-          # --- Find Artifact ---
-          # This path (lib/build/libs) is correct for the JAR file.
-          JAR_FILE=$(find lib/build/libs -name "*.jar" ! -name "*-plain.jar" ! -name "*-sources.jar" | head -1)
-
-          if [ -z "$JAR_FILE" ]; then
-            echo "Error: No primary JAR file found in lib/build/libs/."
-            exit 1
-          fi
-
-          echo "Found JAR File: $JAR_FILE"
-
-          # Set outputs for use in later steps
-          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
-          echo "JAR_PATH=$JAR_FILE" >> $GITHUB_ENV
-
-      # 6. Create Git Tag and Push
-      # This step creates a lightweight tag corresponding to the new version.
-      - name: Create and Push Tag
+      - name: Commit bumped version
         run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git tag $RELEASE_TAG -m "Release $RELEASE_TAG"
-          git push origin $RELEASE_TAG
-        env:
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git commit -am "Bump version to ${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push --follow-tags
 
-      # 7. Create GitHub Release
-      # This action creates a release and attaches the artifact.
-      - name: Create Release
+      - name: Find built JAR
+        id: jar
+        run: echo "file=$(ls lib/build/libs/*.jar | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Use the tag we just pushed
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: Release ${{ env.RELEASE_TAG }}
-          # Use the output from the build/libs search
-          files: ${{ env.JAR_PATH }}
-          # Automatically generate a brief summary of changes since the last tag
-          body_path: |
-            # Release Notes for ${{ env.RELEASE_TAG }}
-
-            This is an automatic release created by the GitHub Actions pipeline.
-
-            ## Key Changes:
-            - Changes since the last tag will be automatically populated here.
-
-          # Set this to true to keep the release as a pre-release for manual review
-          # prerelease: true
-        env:
-          # GITHUB_TOKEN is automatically provided by GitHub Actions
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: v${{ steps.bump.outputs.version }}
+          name: Release ${{ steps.bump.outputs.version }}
+          files: ${{ steps.jar.outputs.file }}
 
