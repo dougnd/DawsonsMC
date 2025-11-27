@@ -1,0 +1,13 @@
+name: DawsonsMC
+version: '1.0.0'
+main: family.dawsons.dawsonsmc.DawsonsMC
+authors: [doug]
+api-version: '1.21.10'
+description: Allows manipulation of dawsons mc server, including mob griefing
+
+commands:
+  mobgriefing:
+    description: Main command for DisableMobGriefing
+    usage: /mobgriefing <mob> <true/false>
+    aliases: [mg]
+    permission-message: You do not have permission to use this command!
