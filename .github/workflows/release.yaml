@@ -40,7 +40,7 @@ jobs:
           echo "New version: $NEW_VERSION"
           sed -i "s/^version=.*/version=$NEW_VERSION/" gradle.properties
 
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Commit bumped version
         run: |
